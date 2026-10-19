@@ -131,11 +131,11 @@ def get_reply(text: str) -> str:
 
 # ── database (Supabase REST, persistent + free) ───────────────────────────────
 def _sb_headers(**extra):
-    h = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-    }
+    h = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+    # Legacy service_role keys are JWTs (start with "eyJ") and go on Authorization too.
+    # New sb_secret_... keys must be sent on the apikey header only.
+    if SUPABASE_KEY.startswith("eyJ"):
+        h["Authorization"] = f"Bearer {SUPABASE_KEY}"
     h.update(extra)
     return h
 
@@ -286,6 +286,40 @@ def process_update(update: dict):
         cmd_stats(chat_id, user)
     elif command == "/users":
         cmd_users(chat_id, user)
+    elif command == "/broadcast":
+        cmd_broadcast(chat_id, user, text)
+    else:
+        handle_message(chat_id, user, msg)
+
+
+# ── Vercel entry point ────────────────────────────────────────────────────────
+class handler(BaseHTTPRequestHandler):
+    def _reply(self, code: int, body: str):
+        data = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        self._reply(200, "Bot is alive.")
+
+    def do_POST(self):
+        # Reject anything that isn't Telegram (secret set via setWebhook).
+        if WEBHOOK_SECRET:
+            got = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not hmac.compare_digest(got, WEBHOOK_SECRET):
+                return self._reply(403, "forbidden")
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            update = json.loads(self.rfile.read(length) or b"{}")
+            process_update(update)
+        except Exception as e:
+            # Always answer 200 so Telegram doesn't endlessly retry the same update.
+            log.exception(f"[update failed] {e}")
+        self._reply(200, "ok")
+at_id, user)
     elif command == "/broadcast":
         cmd_broadcast(chat_id, user, text)
     else:
